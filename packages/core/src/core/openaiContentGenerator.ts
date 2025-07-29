@@ -177,7 +177,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ...samplingParams,
       };
 
-      if (request.config?.tools) {
+      // Add tools - disable for Cerebras due to compatibility issues
+      if (request.config?.tools && !this.isCerebrasProvider()) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
           request.config.tools,
         );
@@ -201,12 +202,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       logApiResponse(this.config, responseEvent);
 
-      // Log interaction if enabled
-      if (this.config.getContentGeneratorConfig()?.enableOpenAILogging) {
-        const openaiRequest = await this.convertGeminiRequestToOpenAI(request);
-        const openaiResponse = this.convertGeminiResponseToOpenAI(response);
-        await openaiLogger.logInteraction(openaiRequest, openaiResponse);
-      }
+      // Log all OpenAI interactions unconditionally for debugging
+      const openaiRequest = await this.convertGeminiRequestToOpenAI(request);
+      const openaiResponse = this.convertGeminiResponseToOpenAI(response);
+      await openaiLogger.logInteraction(openaiRequest, openaiResponse);
 
       return response;
     } catch (error) {
@@ -256,15 +255,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
       );
       logApiResponse(this.config, errorEvent);
 
-      // Log error interaction if enabled
-      if (this.config.getContentGeneratorConfig()?.enableOpenAILogging) {
-        const openaiRequest = await this.convertGeminiRequestToOpenAI(request);
-        await openaiLogger.logInteraction(
-          openaiRequest,
-          undefined,
-          error as Error,
-        );
-      }
+      // Log all OpenAI error interactions unconditionally for debugging
+      const openaiRequest = await this.convertGeminiRequestToOpenAI(request);
+      await openaiLogger.logInteraction(
+        openaiRequest,
+        undefined,
+        error as Error,
+      );
 
       console.error('OpenAI API Error:', errorMessage);
 
@@ -286,6 +283,16 @@ export class OpenAIContentGenerator implements ContentGenerator {
   async generateContentStream(
     request: GenerateContentParameters,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
+    // Check if we're using Cerebras - if so, fall back to non-streaming
+    if (this.isCerebrasProvider()) {
+      console.warn('Cerebras detected: falling back to non-streaming mode for compatibility');
+      const response = await this.generateContent(request);
+      // Return a generator that yields the single response
+      return (async function* () {
+        yield response;
+      })();
+    }
+
     const startTime = Date.now();
     const messages = this.convertToOpenAIFormat(request);
 
@@ -300,10 +307,15 @@ export class OpenAIContentGenerator implements ContentGenerator {
         messages,
         ...samplingParams,
         stream: true,
-        stream_options: { include_usage: true },
       };
 
-      if (request.config?.tools) {
+      // Only add stream_options if NOT using Cerebras (not supported)
+      if (!this.isCerebrasProvider()) {
+        createParams.stream_options = { include_usage: true };
+      }
+
+      // Add tools - disable for Cerebras due to compatibility issues
+      if (request.config?.tools && !this.isCerebrasProvider()) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
           request.config.tools,
         );
@@ -347,17 +359,15 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
           logApiResponse(this.config, responseEvent);
 
-          // Log interaction if enabled (same as generateContent method)
-          if (this.config.getContentGeneratorConfig()?.enableOpenAILogging) {
-            const openaiRequest =
-              await this.convertGeminiRequestToOpenAI(request);
-            // For streaming, we combine all responses into a single response for logging
-            const combinedResponse =
-              this.combineStreamResponsesForLogging(responses);
-            const openaiResponse =
-              this.convertGeminiResponseToOpenAI(combinedResponse);
-            await openaiLogger.logInteraction(openaiRequest, openaiResponse);
-          }
+          // Log all OpenAI streaming interactions unconditionally for debugging
+          const openaiRequest =
+            await this.convertGeminiRequestToOpenAI(request);
+          // For streaming, we combine all responses into a single response for logging
+          const combinedResponse =
+            this.combineStreamResponsesForLogging(responses);
+          const openaiResponse =
+            this.convertGeminiResponseToOpenAI(combinedResponse);
+          await openaiLogger.logInteraction(openaiRequest, openaiResponse);
         } catch (error) {
           const durationMs = Date.now() - startTime;
 
@@ -404,16 +414,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
           );
           logApiResponse(this.config, errorEvent);
 
-          // Log error interaction if enabled
-          if (this.config.getContentGeneratorConfig()?.enableOpenAILogging) {
-            const openaiRequest =
-              await this.convertGeminiRequestToOpenAI(request);
-            await openaiLogger.logInteraction(
-              openaiRequest,
-              undefined,
-              error as Error,
-            );
-          }
+          // Log all OpenAI streaming error interactions unconditionally for debugging
+          const openaiRequest =
+            await this.convertGeminiRequestToOpenAI(request);
+          await openaiLogger.logInteraction(
+            openaiRequest,
+            undefined,
+            error as Error,
+          );
 
           // Provide helpful timeout-specific error message for streaming
           if (isTimeoutError) {
@@ -645,6 +653,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
       return parameters;
     }
 
+    // Check if we're using Cerebras and simplify parameters
+    const baseURL = process.env.OPENAI_BASE_URL || '';
+    const isCerebras = baseURL.includes('cerebras.ai');
+
     const converted = JSON.parse(JSON.stringify(parameters));
 
     const convertTypes = (obj: unknown): unknown => {
@@ -700,7 +712,50 @@ export class OpenAIContentGenerator implements ContentGenerator {
       return result;
     };
 
-    return convertTypes(converted) as Record<string, unknown> | undefined;
+    const result = convertTypes(converted) as Record<string, unknown> | undefined;
+    
+    if (isCerebras && result) {
+      // Apply Cerebras simplification after type conversion
+      return this.simplifyCerebrasParameters(result);
+    }
+    
+    return result;
+  }
+
+  private isCerebrasProvider(): boolean {
+    const baseURL = process.env.OPENAI_BASE_URL || '';
+    return baseURL.includes('cerebras.ai');
+  }
+
+  private simplifyCerebrasParameters(parameters: Record<string, unknown>): Record<string, unknown> {
+    // For Cerebras, create a much simpler parameter schema
+    const simplified: Record<string, unknown> = {
+      type: 'object',
+      properties: {},
+      required: []
+    };
+
+    // Extract basic properties and simplify them
+    if (parameters.properties && typeof parameters.properties === 'object') {
+      const props = parameters.properties as Record<string, unknown>;
+      for (const [key, value] of Object.entries(props)) {
+        if (typeof value === 'object' && value !== null) {
+          const prop = value as Record<string, unknown>;
+          // Create simple property definition
+          (simplified.properties as Record<string, unknown>)[key] = {
+            type: prop.type || 'string',
+            description: prop.description || `${key} parameter`
+          };
+        }
+      }
+    }
+
+    // Copy required fields if they exist
+    if (Array.isArray(parameters.required)) {
+      simplified.required = parameters.required;
+    }
+
+    return simplified;
   }
 
   private async convertGeminiToolsToOpenAI(
@@ -1304,14 +1359,17 @@ export class OpenAIContentGenerator implements ContentGenerator {
    * 1. Config-level sampling parameters (highest priority)
    * 2. Request-level parameters (medium priority)
    * 3. Default values (lowest priority)
+   * Note: Cerebras doesn't support presence_penalty, frequency_penalty, and some other parameters
    */
   private buildSamplingParameters(
     request: GenerateContentParameters,
   ): Record<string, unknown> {
     const configSamplingParams =
       this.config.getContentGeneratorConfig()?.samplingParams;
+    const baseURL = process.env.OPENAI_BASE_URL || '';
+    const isCerebras = baseURL.includes('cerebras.ai');
 
-    const params = {
+    const params: Record<string, unknown> = {
       // Temperature: config > request > default
       temperature:
         configSamplingParams?.temperature !== undefined
@@ -1335,26 +1393,31 @@ export class OpenAIContentGenerator implements ContentGenerator {
             ? request.config.topP
             : 1.0,
 
-      // Top-k: config only (not available in request)
+      // Top-k: config only (not available in request) - supported by Cerebras
       ...(configSamplingParams?.top_k !== undefined
         ? { top_k: configSamplingParams.top_k }
         : {}),
 
-      // Repetition penalty: config only
+      // Repetition penalty: config only - supported by Cerebras
       ...(configSamplingParams?.repetition_penalty !== undefined
         ? { repetition_penalty: configSamplingParams.repetition_penalty }
         : {}),
-
-      // Presence penalty: config only
-      ...(configSamplingParams?.presence_penalty !== undefined
-        ? { presence_penalty: configSamplingParams.presence_penalty }
-        : {}),
-
-      // Frequency penalty: config only
-      ...(configSamplingParams?.frequency_penalty !== undefined
-        ? { frequency_penalty: configSamplingParams.frequency_penalty }
-        : {}),
     };
+
+    // Only add presence_penalty and frequency_penalty if NOT using Cerebras
+    if (!isCerebras) {
+      // Presence penalty: config only - NOT supported by Cerebras
+      if (configSamplingParams?.presence_penalty !== undefined) {
+        params.presence_penalty = configSamplingParams.presence_penalty;
+      }
+
+      // Frequency penalty: config only - NOT supported by Cerebras  
+      if (configSamplingParams?.frequency_penalty !== undefined) {
+        params.frequency_penalty = configSamplingParams.frequency_penalty;
+      }
+    } else if (configSamplingParams?.presence_penalty !== undefined || configSamplingParams?.frequency_penalty !== undefined) {
+      console.warn('Cerebras detected: ignoring presence_penalty and frequency_penalty (not supported)');
+    }
 
     return params;
   }
@@ -1516,8 +1579,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
     const samplingParams = this.buildSamplingParameters(request);
     Object.assign(openaiRequest, samplingParams);
 
-    // Convert tools if present
-    if (request.config?.tools) {
+    // Convert tools if present - disable for Cerebras due to compatibility issues
+    if (request.config?.tools && !this.isCerebrasProvider()) {
       openaiRequest.tools = await this.convertGeminiToolsToOpenAI(
         request.config.tools,
       );
