@@ -52,6 +52,9 @@ interface OpenAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
 }
 
 interface OpenAIChoice {
@@ -553,6 +556,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
       return new GenerateContentResponse();
     }
 
+    const lastResponse = responses[responses.length - 1];
+
     // Find the last response with usage metadata
     const finalUsageMetadata = responses
       .slice()
@@ -599,6 +604,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
         safetyRatings: [],
       },
     ];
+    combinedResponse.responseId = lastResponse?.responseId;
+    combinedResponse.createTime = lastResponse?.createTime;
     combinedResponse.modelVersion = this.model;
     combinedResponse.promptFeedback = { safetyRatings: [] };
     combinedResponse.usageMetadata = finalUsageMetadata;
@@ -1213,6 +1220,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
       }
     }
 
+    response.responseId = openaiResponse.id;
+    response.createTime = openaiResponse.created.toString();
+
     response.candidates = [
       {
         content: {
@@ -1230,15 +1240,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
     // Add usage metadata if available
     if (openaiResponse.usage) {
-      const usage = openaiResponse.usage as {
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        total_tokens?: number;
-      };
+      const usage = openaiResponse.usage as OpenAIUsage;
 
       const promptTokens = usage.prompt_tokens || 0;
       const completionTokens = usage.completion_tokens || 0;
       const totalTokens = usage.total_tokens || 0;
+      const cachedTokens = usage.prompt_tokens_details?.cached_tokens || 0;
 
       // If we only have total tokens but no breakdown, estimate the split
       // Typically input is ~70% and output is ~30% for most conversations
@@ -1255,6 +1262,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         promptTokenCount: finalPromptTokens,
         candidatesTokenCount: finalCompletionTokens,
         totalTokenCount: totalTokens,
+        cachedContentTokenCount: cachedTokens,
       };
     }
 
@@ -1348,20 +1356,20 @@ export class OpenAIContentGenerator implements ContentGenerator {
       response.candidates = [];
     }
 
+    response.responseId = chunk.id;
+    response.createTime = chunk.created.toString();
+
     response.modelVersion = this.model;
     response.promptFeedback = { safetyRatings: [] };
 
     // Add usage metadata if available in the chunk
     if (chunk.usage) {
-      const usage = chunk.usage as {
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        total_tokens?: number;
-      };
+      const usage = chunk.usage as OpenAIUsage;
 
       const promptTokens = usage.prompt_tokens || 0;
       const completionTokens = usage.completion_tokens || 0;
       const totalTokens = usage.total_tokens || 0;
+      const cachedTokens = usage.prompt_tokens_details?.cached_tokens || 0;
 
       // If we only have total tokens but no breakdown, estimate the split
       // Typically input is ~70% and output is ~30% for most conversations
@@ -1378,6 +1386,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         promptTokenCount: finalPromptTokens,
         candidatesTokenCount: finalCompletionTokens,
         totalTokenCount: totalTokens,
+        cachedContentTokenCount: cachedTokens,
       };
     }
 
@@ -1820,9 +1829,11 @@ export class OpenAIContentGenerator implements ContentGenerator {
     }
 
     const openaiResponse: OpenAIResponseFormat = {
-      id: `chatcmpl-${Date.now()}`,
+      id: response.responseId || `chatcmpl-${Date.now()}`,
       object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
+      created: response.createTime
+        ? Number(response.createTime)
+        : Math.floor(Date.now() / 1000),
       model: this.model,
       choices: [choice],
     };
@@ -1834,6 +1845,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
         completion_tokens: response.usageMetadata.candidatesTokenCount || 0,
         total_tokens: response.usageMetadata.totalTokenCount || 0,
       };
+
+      if (response.usageMetadata.cachedContentTokenCount) {
+        openaiResponse.usage.prompt_tokens_details = {
+          cached_tokens: response.usageMetadata.cachedContentTokenCount,
+        };
+      }
     }
 
     return openaiResponse;
