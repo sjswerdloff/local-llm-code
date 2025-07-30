@@ -207,6 +207,36 @@ export class OpenAIContentGenerator implements ContentGenerator {
       const openaiResponse = this.convertGeminiResponseToOpenAI(response);
       await openaiLogger.logInteraction(openaiRequest, openaiResponse);
 
+      // Store performance metrics for Cerebras (accessible via /stats command)
+      if (this.isCerebrasProvider() && openaiResponse.usage?.completion_tokens) {
+        const completionTokens = openaiResponse.usage.completion_tokens;
+        if (completionTokens > 0) {
+          const durationSeconds = durationMs / 1000;
+          const tokensPerSecond = (completionTokens / durationSeconds).toFixed(1);
+          
+          // Accumulate performance data instead of overwriting
+          const existing = (global as any).lastCerebrasPerformance || {
+            tokensPerSecond: 0,
+            completionTokens: 0,
+            durationSeconds: 0,
+            timestamp: new Date().toISOString(),
+          };
+          
+          const totalCompletionTokens = existing.completionTokens + completionTokens;
+          const totalDurationSeconds = existing.durationSeconds + durationSeconds;
+          const overallTokensPerSecond = totalDurationSeconds > 0 
+            ? (totalCompletionTokens / totalDurationSeconds).toFixed(1)
+            : tokensPerSecond;
+          
+          (global as any).lastCerebrasPerformance = {
+            tokensPerSecond: parseFloat(overallTokensPerSecond),
+            completionTokens: totalCompletionTokens,
+            durationSeconds: parseFloat(totalDurationSeconds.toFixed(2)),
+            timestamp: new Date().toISOString(),
+          };
+        }
+      }
+
       return response;
     } catch (error) {
       const durationMs = Date.now() - startTime;

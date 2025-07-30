@@ -71,6 +71,11 @@ export const SessionStatsProvider: React.FC<{ children: React.ReactNode }> = ({
   });
 
   useEffect(() => {
+    // Reset Cerebras performance data at the start of a new session
+    (global as any).lastCerebrasPerformance = null;
+  }, []);
+
+  useEffect(() => {
     const handleUpdate = ({
       metrics,
       lastPromptTokenCount,

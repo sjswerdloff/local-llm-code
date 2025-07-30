@@ -271,9 +271,28 @@ export const useSlashCommandProcessor = (
           const { sessionStartTime } = session.stats;
           const wallDuration = now.getTime() - sessionStartTime.getTime();
 
+          // Include Cerebras performance data if available
+          let statsContent = `Session duration: ${formatDuration(wallDuration)}`;
+          
+          // Check for Cerebras performance data
+          if ((global as any).lastCerebrasPerformance) {
+            const perf = (global as any).lastCerebrasPerformance;
+            const timeAgo = new Date(Date.now() - new Date(perf.timestamp).getTime());
+            const minutesAgo = Math.floor(timeAgo.getTime() / 1000 / 60);
+            
+            statsContent += `\n\n════════════════════════════════════════`;
+            statsContent += `\n⚡ CEREBRAS CUMULATIVE PERFORMANCE`;
+            statsContent += `\n════════════════════════════════════════`;
+            statsContent += `\n📈 Average Speed: ${perf.tokensPerSecond} tokens/sec`;
+            statsContent += `\n📊 Total Tokens: ${perf.completionTokens} tokens`;
+            statsContent += `\n⏱️  Total Duration: ${perf.durationSeconds}s`;
+            statsContent += `\n🕐 Last Updated: ${new Date(perf.timestamp).toLocaleTimeString()} (${minutesAgo}m ago)`;
+            statsContent += `\n════════════════════════════════════════`;
+          }
+
           addMessage({
-            type: MessageType.STATS,
-            duration: formatDuration(wallDuration),
+            type: MessageType.INFO,
+            content: statsContent,
             timestamp: new Date(),
           });
         },
