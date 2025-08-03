@@ -232,6 +232,55 @@ export const useSlashCommandProcessor = (
         const parts = trimmed.substring(1).trim().split(/\s+/);
         const commandPath = parts.filter((p) => p); // The parts of the command, e.g., ['memory', 'add']
 
+        // Special handling for /stats command with Cerebras performance monitoring
+        if (commandPath[0] === 'stats') {
+          const subCommand = commandPath[1];
+          
+          if (subCommand === 'model') {
+            addMessage({
+              type: MessageType.MODEL_STATS,
+              timestamp: new Date(),
+            });
+            return { type: 'handled' };
+          } else if (subCommand === 'tools') {
+            addMessage({
+              type: MessageType.TOOL_STATS,
+              timestamp: new Date(),
+            });
+            return { type: 'handled' };
+          }
+
+          const now = new Date();
+          const { sessionStartTime } = session.stats;
+          const wallDuration = now.getTime() - sessionStartTime.getTime();
+
+          // Include Cerebras performance data if available
+          let statsContent = `Session duration: ${Math.floor(wallDuration / 1000 / 60)} minutes`;
+          
+          // Check for Cerebras performance data
+          if ((global as any).lastCerebrasPerformance) {
+            const perf = (global as any).lastCerebrasPerformance;
+            const timeAgo = new Date(Date.now() - new Date(perf.timestamp).getTime());
+            const minutesAgo = Math.floor(timeAgo.getTime() / 1000 / 60);
+            
+            statsContent += `\n\n════════════════════════════════════════`;
+            statsContent += `\n⚡ CEREBRAS CUMULATIVE PERFORMANCE`;
+            statsContent += `\n════════════════════════════════════════`;
+            statsContent += `\n📈 Average Speed: ${perf.tokensPerSecond} tokens/sec`;
+            statsContent += `\n📊 Total Tokens: ${perf.completionTokens} tokens`;
+            statsContent += `\n⏱️  Total Duration: ${perf.durationSeconds}s`;
+            statsContent += `\n🕐 Last Updated: ${new Date(perf.timestamp).toLocaleTimeString()} (${minutesAgo}m ago)`;
+            statsContent += `\n════════════════════════════════════════`;
+          }
+
+          addMessage({
+            type: MessageType.INFO,
+            content: statsContent,
+            timestamp: new Date(),
+          });
+          return { type: 'handled' };
+        }
+
         let currentCommands = commands;
         let commandToExecute: SlashCommand | undefined;
         let pathIndex = 0;
@@ -423,55 +472,6 @@ export const useSlashCommandProcessor = (
             });
             return { type: 'handled' };
           }
-        }
-
-        // Special handling for /stats command with Cerebras performance monitoring
-        if (commandPath[0] === 'stats') {
-          const subCommand = commandPath[1];
-          
-          if (subCommand === 'model') {
-            addMessage({
-              type: MessageType.MODEL_STATS,
-              timestamp: new Date(),
-            });
-            return { type: 'handled' };
-          } else if (subCommand === 'tools') {
-            addMessage({
-              type: MessageType.TOOL_STATS,
-              timestamp: new Date(),
-            });
-            return { type: 'handled' };
-          }
-
-          const now = new Date();
-          const { sessionStartTime } = session.stats;
-          const wallDuration = now.getTime() - sessionStartTime.getTime();
-
-          // Include Cerebras performance data if available
-          let statsContent = `Session duration: ${Math.floor(wallDuration / 1000 / 60)} minutes`;
-          
-          // Check for Cerebras performance data
-          if ((global as any).lastCerebrasPerformance) {
-            const perf = (global as any).lastCerebrasPerformance;
-            const timeAgo = new Date(Date.now() - new Date(perf.timestamp).getTime());
-            const minutesAgo = Math.floor(timeAgo.getTime() / 1000 / 60);
-            
-            statsContent += `\n\n════════════════════════════════════════`;
-            statsContent += `\n⚡ CEREBRAS CUMULATIVE PERFORMANCE`;
-            statsContent += `\n════════════════════════════════════════`;
-            statsContent += `\n📈 Average Speed: ${perf.tokensPerSecond} tokens/sec`;
-            statsContent += `\n📊 Total Tokens: ${perf.completionTokens} tokens`;
-            statsContent += `\n⏱️  Total Duration: ${perf.durationSeconds}s`;
-            statsContent += `\n🕐 Last Updated: ${new Date(perf.timestamp).toLocaleTimeString()} (${minutesAgo}m ago)`;
-            statsContent += `\n════════════════════════════════════════`;
-          }
-
-          addMessage({
-            type: MessageType.INFO,
-            content: statsContent,
-            timestamp: new Date(),
-          });
-          return { type: 'handled' };
         }
 
         addMessage({
